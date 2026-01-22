@@ -35,6 +35,19 @@
 - ✅ 完整的上下文理解
 - ✅ 最流畅的使用体验
 
+## 框架参考
+
+如果你的项目基于 **YxFramework**，Skill 内置了框架最佳实践参考（`references/framework_patterns.md`），包含：
+
+- ✅ **标准对象生命周期模式**（UI、Timer、Manager 等）
+- ✅ **常见 Release 调用位置和时机**
+- ✅ **容易遗漏 Release 的 5 大场景**
+- ✅ **父子对象释放关系处理**
+- ✅ **代码审查 Checklist**
+- ✅ **5 种常见反模式及修复方法**
+
+分析时会自动结合框架知识，提供更精准的修复建议。
+
 ## 使用场景
 
 当你遇到以下情况时使用这个 skill：
@@ -49,10 +62,15 @@
 ### 引用链格式
 
 ```
-ClassName:MemoryAddress[ReleaseStatus].fieldName.ClassName:MemoryAddress[ReleaseStatus]...
+ClassName:MemoryAddress[ReleaseStatus].fieldName.ClassName:MemoryAddress[ReleaseStatus]...__cppinst = BlueprintClassName
 ```
 
-### 示例
+**关键点**：
+- 只有 Lua 对象有 `[true]` 或 `[false]` 标记
+- 字段名（如 `_nameComp`）没有标记，只是连接符
+- `__cppinst = BlueprintClassName` 是可选的，表示泄露的 C++ 蓝图类
+
+### 示例 1：基本格式
 
 ```
 IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[false]._crossoverLabel.IVComponentBase:000000029EAF72C0[false]
@@ -63,6 +81,18 @@ IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:00000
 - `IVTextQualityComponent` (未释放) 通过 `_crossoverLabel` 字段引用了
 - `IVComponentBase` (未释放)
 
+### 示例 2：包含 C++ 实例信息
+
+```
+IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[true]._crossoverLabel.IVComponentBase:000000029EAF72C0[false].__cppinst = WBP_SlotCompIconCrossoverLabel_C
+```
+
+这表示：
+- `IVShopItemTemplate` (已释放) → `_nameComp` → `IVTextQualityComponent` (已释放)
+- `IVTextQualityComponent` → `_crossoverLabel` → `IVComponentBase` (未释放)
+- `IVComponentBase` 持有的 C++ 蓝图实例是 `WBP_SlotCompIconCrossoverLabel_C`
+- 这个 UE widget 无法被释放，因为 `IVComponentBase` 没有调用 `Release()`
+
 ## 如何使用
 
 ### 方式一：在 Lua 工程中使用（推荐 ⭐）
@@ -71,7 +101,7 @@ IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:00000
 
 ```
 请分析这条内存泄露：
-IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[false]._crossoverLabel.IVComponentBase:000000029EAF72C0[false]
+IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[true]._crossoverLabel.IVComponentBase:000000029EAF72C0[false].__cppinst = WBP_SlotCompIconCrossoverLabel_C
 ```
 
 ### 方式二：指定源代码路径
@@ -103,8 +133,8 @@ D:\congtoulin_Ma1_code_Microcosm\DFMSource\LuaSource\DFM
 ```
 请分析这些内存泄露的引用链：
 
-1. IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[false]
-2. IVShopItemTemplate:000000029E8DD9C0[true]._icon.IVIcon:000000029E8D6400[false]
+1. IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[false].__cppinst = WBP_TextComp_C
+2. IVShopItemTemplate:000000029E8DD9C0[true]._icon.IVIcon:000000029E8D6400[false].__cppinst = WBP_IconWidget_C
 3. ...
 ```
 
@@ -114,26 +144,31 @@ Skill 会提供以下内容：
 
 1. **引用链可视化**：树状图展示引用关系
 2. **泄露点定位**：标识哪些对象未释放
-3. **代码位置**：
+3. **C++ 实例信息**：显示泄露的 UE 蓝图类名（如果提供了 `__cppinst`）
+4. **代码位置**：
    - 类定义文件和行号
    - 字段赋值位置
    - 父对象的清理方法
    - 缺失 Release 调用的位置
-4. **根因分析**：解释为什么没有调用 Release
-5. **修复建议**：提供具体的代码修改方案（Before/After）
-6. **风险评估**：说明修复可能的影响
+5. **根因分析**：解释为什么没有调用 Release
+6. **修复建议**：提供具体的代码修改方案（Before/After）
+7. **影响评估**：说明泄露的实际影响（包括 C++ 蓝图资源）
 
 ## 工具脚本
 
 ### parse_chain.py
 
-用于解析引用链字符串的 Python 工具：
+用于解析引用链字符串的 Python 工具（已支持 `__cppinst` 格式）：
 
 ```bash
-python scripts/parse_chain.py "IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[false]"
+python scripts/parse_chain.py "IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[false].__cppinst = WBP_TextComp_C"
 ```
 
-输出 JSON 格式的结构化数据，便于进一步处理。
+输出 JSON 格式的结构化数据，包含：
+- 解析后的节点信息
+- C++ 蓝图类名
+- 泄露点分析
+- 可视化树状图
 
 ## 参考文档
 
@@ -142,6 +177,33 @@ python scripts/parse_chain.py "IVShopItemTemplate:000000029E8DD9C0[true]._nameCo
 包含常见的 Release 调用模式和反模式（导致泄露的模式），可以帮助理解代码中的标准做法。
 
 ## 注意事项
+
+### 引用链格式的关键理解 ⚠️
+
+**重要**：只有 Lua 对象才有 `[true]` 或 `[false]` 标记，字段名没有标记！
+
+```
+ClassName:Address[ReleaseStatus].fieldName.ClassName:Address[ReleaseStatus].__cppinst = BlueprintClass
+    ↑                                ↑                                              ↑
+   有标记                          无标记（仅是连接）                            C++蓝图类（可选）
+```
+
+**示例**：
+```
+A:addr1[true]._field.B:addr2[false].__cppinst = WBP_MyWidget_C
+```
+- `A` 是 Lua 对象，`[true]` 表示它调用了 Release
+- `_field` 是字段名，**没有标记**
+- `B` 是 Lua 对象，`[false]` 表示它**没有**调用 Release
+- `__cppinst = WBP_MyWidget_C` 表示 B 持有的 C++ 蓝图类
+
+**关键点**：
+- `A[true]` 表示 A 调用了自己的 Release()
+- 但这**不代表** A 释放了它的 `_field` 子对象
+- 需要检查 A 的 Cleanup 方法是否有 `self._field:Release()`
+- `WBP_MyWidget_C` 这个 UE widget 会一直占用内存，直到 B 调用 Release
+
+### 其他注意事项
 
 1. **Lua 虚拟机泄露不在范围内**：这个 skill 只关注为什么 Lua 代码没有调用 Release，不处理 Lua GC 本身的问题
 2. **手动 Release**：假设项目使用手动 Release 机制，不依赖自动 GC
@@ -163,7 +225,7 @@ python scripts/parse_chain.py "IVShopItemTemplate:000000029E8DD9C0[true]._nameCo
 3. **直接提供引用链**（无需路径）
    ```
    分析这条内存泄露：
-   IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[false]
+   IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[false].__cppinst = WBP_TextComp_C
    ```
 
 4. **Skill 自动完成分析**：
@@ -177,11 +239,18 @@ python scripts/parse_chain.py "IVShopItemTemplate:000000029E8DD9C0[true]._nameCo
 
 ## 示例会话
 
+### 示例 1：父对象已释放，但忘记释放子对象
+
 **用户：**
 ```
 请分析这条内存泄露：
-IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[false]._crossoverLabel.IVComponentBase:000000029EAF72C0[false]
+IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[false].__cppinst = WBP_TextQualityComp_C
 ```
+
+**理解**：
+- `IVShopItemTemplate` 调用了 Release
+- `IVTextQualityComponent` 没有调用 Release
+- 泄露的 C++ 蓝图是 `WBP_TextQualityComp_C`
 
 **AI 助手：**
 ```
@@ -190,14 +259,88 @@ IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:00000
 ### 引用链可视化
 IVShopItemTemplate [已释放 ✓]
   └─ _nameComp → IVTextQualityComponent [未释放 ⚠️]
-      └─ _crossoverLabel → IVComponentBase [未释放 ⚠️]
+      └─ __cppinst → WBP_TextQualityComp_C (C++ Blueprint)
 
 ### 泄露点
 - 对象：IVTextQualityComponent at 0x000000029E8D6300
 - 字段：IVShopItemTemplate 的 _nameComp
-- 状态：父对象已释放，但此对象未释放
+- 状态：父对象已释放，但未释放此子对象
+- C++ 实例：WBP_TextQualityComp_C（UE widget 被泄露）
 
-[继续分析...]
+### 分析重点
+由于父对象 `IVShopItemTemplate` 调用了 Release，需要检查它是否正确释放了 `_nameComp` 字段。
+
+[检查代码...]
+
+### 根因
+`IVShopItemTemplate:Cleanup()` 释放了 `_icon` 但忘记释放 `_nameComp`。
+
+### 修复建议
+在 `IVShopItemTemplate.lua` 的 Cleanup 方法中添加：
+```lua
+if self._nameComp then
+    self._nameComp:Release()
+    self._nameComp = nil
+end
+```
+
+### 影响评估
+- Lua 对象 `IVTextQualityComponent` 无法被 GC
+- C++ 蓝图 `WBP_TextQualityComp_C` 实例占用内存
+- 可能包含 UE Widget 相关的纹理、材质等资源
+```
+
+### 示例 2：父对象和子对象都已释放，但子对象忘记释放孙对象
+
+**用户：**
+```
+分析这条引用链：
+IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[true]._crossoverLabel.IVComponentBase:000000029EAF72C0[false].__cppinst = WBP_SlotCompIconCrossoverLabel_C
+```
+
+**理解**：
+- `IVShopItemTemplate` 调用了 Release ✓
+- `IVTextQualityComponent` 也调用了 Release ✓
+- 但 `IVComponentBase` 没有调用 Release ✗
+- 泄露的 C++ 蓝图是 `WBP_SlotCompIconCrossoverLabel_C`
+
+**AI 助手：**
+```
+## 内存泄露分析报告
+
+### 引用链可视化
+IVShopItemTemplate [已释放 ✓]
+  └─ _nameComp → IVTextQualityComponent [已释放 ✓]
+      └─ _crossoverLabel → IVComponentBase [未释放 ⚠️]
+          └─ __cppinst → WBP_SlotCompIconCrossoverLabel_C (C++ Blueprint)
+
+### 泄露点
+- 对象：IVComponentBase at 0x000000029EAF72C0
+- 字段：IVTextQualityComponent 的 _crossoverLabel
+- 状态：父对象虽然调用了自身的 Release，但未释放此子字段
+- C++ 实例：WBP_SlotCompIconCrossoverLabel_C（UE widget 被泄露）
+
+### 关键理解
+虽然 `IVTextQualityComponent` 调用了 `Release()` 释放自己，但这**不意味着**它自动释放了子对象。需要检查它的 Cleanup 方法是否有释放 `_crossoverLabel`。
+
+[检查代码...]
+
+### 根因
+`IVTextQualityComponent:Cleanup()` 释放了 `_mainLabel` 但忘记释放 `_crossoverLabel`。
+
+### 修复建议
+在 `IVTextQualityComponent.lua` 的 Cleanup 方法中添加：
+```lua
+if self._crossoverLabel then
+    self._crossoverLabel:Release()
+    self._crossoverLabel = nil
+end
+```
+
+### 影响评估
+- Lua 对象 `IVComponentBase` 无法被 GC
+- C++ 蓝图 `WBP_SlotCompIconCrossoverLabel_C` 实例占用内存
+- 这是一个 UE Slate widget，可能包含图标、材质等资源
 ```
 
 ## 技巧

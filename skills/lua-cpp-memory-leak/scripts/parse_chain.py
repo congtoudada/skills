@@ -8,7 +8,7 @@ Usage:
     python parse_chain.py <reference_chain>
 
 Example:
-    python parse_chain.py "IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[false]._crossoverLabel.IVComponentBase:000000029EAF72C0[false]"
+    python parse_chain.py "IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[false].__cppinst = WBP_MyWidget_C"
 
 Output:
     JSON structure with parsed nodes and leak analysis
@@ -50,14 +50,25 @@ class ReferenceChain:
     def __init__(self, chain_str: str):
         self.raw_chain = chain_str
         self.nodes: List[ReferenceNode] = []
+        self.cpp_instance: Optional[str] = None  # C++ blueprint class name
         self.parse()
         
     def parse(self):
         """Parse the reference chain string into nodes."""
+        # First, extract __cppinst suffix if present
+        # Pattern: .__cppinst = BlueprintClassName
+        cpp_match = re.search(r'\.__cppinst\s*=\s*([A-Za-z0-9_]+)$', self.raw_chain)
+        
+        chain_to_parse = self.raw_chain
+        if cpp_match:
+            self.cpp_instance = cpp_match.group(1)
+            # Remove the __cppinst part for parsing
+            chain_to_parse = self.raw_chain[:cpp_match.start()]
+        
         # Pattern: ClassName:Address[true/false]
         # Connected by .fieldName.
         
-        parts = self.raw_chain.split('.')
+        parts = chain_to_parse.split('.')
         
         current_field = None
         for i, part in enumerate(parts):
@@ -76,8 +87,9 @@ class ReferenceChain:
                 self.nodes.append(node)
                 current_field = None
             else:
-                # This is a field name
-                current_field = part
+                # This is a field name (skip __cppinst as it's handled above)
+                if part and not part.startswith('__cppinst'):
+                    current_field = part
                 
     def get_leak_nodes(self) -> List[ReferenceNode]:
         """Return all nodes that have not called Release."""
@@ -117,6 +129,11 @@ class ReferenceChain:
             status = "Released ✓" if node.released else "NOT RELEASED ⚠️"
             lines.append(f"{indent}{node.class_name} [{status}]")
         
+        # Add C++ instance info if present
+        if self.cpp_instance:
+            last_indent = "  " * len(self.nodes)
+            lines.append(f"{last_indent}└─ __cppinst → {self.cpp_instance} (C++ Blueprint)")
+        
         return "\n".join(lines)
     
     def analyze(self) -> Dict:
@@ -128,6 +145,7 @@ class ReferenceChain:
             "raw_chain": self.raw_chain,
             "total_nodes": len(self.nodes),
             "leaked_nodes": len(leak_nodes),
+            "cpp_instance": self.cpp_instance,
             "nodes": [node.to_dict() for node in self.nodes],
             "visualization": self.visualize(),
             "leaks": []
@@ -144,7 +162,8 @@ class ReferenceChain:
                 "parent_released": parent.released if parent else None,
                 "has_children": len(children) > 0,
                 "children_count": len(children),
-                "priority": "high" if parent and parent.released else "medium"
+                "priority": "high" if parent and parent.released else "medium",
+                "cpp_blueprint": self.cpp_instance if leak_node == self.nodes[-1] else None
             }
             
             analysis["leaks"].append(leak_info)
@@ -161,13 +180,18 @@ def parse_multiple_chains(chain_strings: List[str]) -> Dict:
     chains = [ReferenceChain(chain_str) for chain_str in chain_strings]
     
     all_leaked_classes = set()
+    all_cpp_instances = set()
+    
     for chain in chains:
         for leak in chain.get_leak_nodes():
             all_leaked_classes.add(leak.class_name)
+        if chain.cpp_instance:
+            all_cpp_instances.add(chain.cpp_instance)
     
     result = {
         "total_chains": len(chains),
         "unique_leaked_classes": list(all_leaked_classes),
+        "unique_cpp_blueprints": list(all_cpp_instances),
         "chains": [chain.to_dict() for chain in chains]
     }
     
@@ -178,7 +202,7 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: python parse_chain.py <reference_chain> [<chain2>] [<chain3>] ...")
         print("\nExample:")
-        print('  python parse_chain.py "IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[false]"')
+        print('  python parse_chain.py "IVShopItemTemplate:000000029E8DD9C0[true]._nameComp.IVTextQualityComponent:000000029E8D6300[false].__cppinst = WBP_MyWidget_C"')
         sys.exit(1)
     
     chain_strings = sys.argv[1:]
